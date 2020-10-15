@@ -22,6 +22,7 @@
 
 ## How to use
 - Install [python](https://www.python.org/downloads/) (latest version 3.x)
+- Install/update pip (`python -m pip install --upgrade pip`)
 - Install requirements (`pip install -r requirements.txt`)
 - Run ProgressTracker.py with python!
 
