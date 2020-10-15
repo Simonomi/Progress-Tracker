@@ -1,0 +1,4 @@
+Pillow
+progressbar2
+requests
+selenium
