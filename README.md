@@ -14,10 +14,8 @@
 		- Preview image
 	- Automatically updates shows when new seasons/episodes are released
 - To add shows in bulk, separate each title by a `|` character
-- Stores all data in a `.zip` file, the location of which can be anywhere on disk
-	- Can be stored in a cloud-synced folder (Google Drive, Dropbox, iCould, etc.)
-	- If necessary, can be manually overwritten
-- Togglable light/dark theme
+- Togglable light/dark theme (edit variable in code)
+- "Starred" shows appear at top of their respective sections
 - More not listed
 
 ## How to use
@@ -25,27 +23,6 @@
 - Install/update pip (`python -m pip install --upgrade pip`)
 - Install requirements (`pip install -r requirements.txt`)
 - Run ProgressTracker.py with python!
-
-## Data storage format
-Each show is stored in a .data file with the title _[SHOW TITLE].data_ in the following format:
-1. Image link (http://...)
-2. Episode data (#|#|#|#)
-	- Each # is the number of episodes in that season
-3. Status (Running/Ended/To Be Determined)
-4. Links (http://...|http://...|http://...)
-5. Episode progress (#)
-	- Represents the total episode number (the number of total previous episodes)
-6. Time progress (#:##)
-	- Can be in any format, #:## is suggested
-7. Original title (...)
-	- Should not be edited manually, used to reset title
-8. Discontinued (True/False)
-9. TVMaze ID (#)
-	- Also should not be edited, links a show to it's TVMaze show
-10. Auto mode (True/False)
-	- Whether or not the episode data is manual or set automatically
-
-(Yes the order is arbitrary and also vestigial)
 
 ## Sites
 - New shows automatically generate a link for optional user-defined "Sites"
