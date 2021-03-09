@@ -24,32 +24,51 @@
 - Install requirements (`pip install -r requirements.txt`)
 - Run ProgressTracker.py with python!
 
-## Sites
+## Links
 - New shows automatically generate a link for optional user-defined "Sites"
-- Shows have an option in settings to generate a link for a Site
+- Shows have an option in settings to generate a link for each Site
 - When loaded, the application searches for `.site` files in its temporary directory (default _C:\Users\%USERNAME%\AppData\Roaming\ProgressTracker\Sites\\_)
-	- If none are found, all Site functionality is disabled
-- A `.site` file contains the following information separated by newlines:
-	1. Priority (#)
-	2. Search link (http://...{})
-		- Must have `{}` or `{0}` that is replaced with a show's title
-	3. Search Element (*css selector*)
-		- Selector must indicate search result items
-	4. Search Attribute (*html attribute*)
-		- Typically `href`, indicates link to season page
-	5. Multiple Seasons (True/False)
-		- Indicates whether there are multiple season links, usually one per season
-		- Used to determine how many search results to accept (one vs two)
-	6. Page Element (*css selector*)
-		- Selector must indicate episode items
-	7. Page Attribute (*html attribute*)
-		- Typically `href`, link to individual episode page
-	8. Multiple Episodes (True/False)
-		- Indicates whether separate episodes have different links
-	9. Flip Page Order (True/False)
-		- Used if episode pages are presented in reverse order
-	10. Flip Season Order (True/False)
-		- Used if search results are presented in reverse season order
+	- If none are found, all link functionality is disabled
+- A `.site` file contains the following information on the first three lines:
+	1. priority: _[number]_
+		- A rating of which order a site should be used in, used from lowest to highest
+	2. multiple seasons: _[True/False]_
+		- True if the site has a different format link for each season of a show
+		- www.example.com/show-name-season-1-episode-1
+		- www.example.com/show-name-season-2-episode-1
+	3. downloadable: _[True/False]_
+		- True if it is possible (and provided) to generate a download link (.mp4) for an episode
+- Followed by script-like sets of instructions
+	- One section is required to generate a link for a show: _firstLink_
+	- One section is optionally used for generating a download link for an episode: _downloadEpisode_
+	- Each section is marked at the beginning and end by a line with nothing but the name of that section
+	- A section uses a list of instructions and arguments to manipulate an array of values, which by default is empty (`[]`)
+	- In a section, the following syntax is used:
+		- Command name
+			- **getElementAttribute** sets item _index_ to the _attribute_ of the _element_ at _element index_ in the webpage at _url_ (any `{}` in _url_ will be replaced with the show title, or in case of multiple seasons, "show title _[season number]_")
+				- index
+				- url
+				- element
+				- attribute
+				- element index
+			- **replace** replaces _query_ with _replacement_ in item _index_
+				- index
+				- query
+				- replacement
+			- **split** splits item _index_ with _regex query_
+				- index
+				- regex query
+			- **insert** inserts _text_ into memory at _index_
+				- index
+				- text
+			- **debase** decodes base64 item at _index_
+				- index
+			- **add** adds item at _index_ to _number_
+				- index
+				- number
+- Example: _Netflix.site_
+	- priority: 0<br>multiple seasons: False<br>downloadable: False<br><br>firstLink<br>getElementAttribute<br>0<br>https://www.google.com/search?q=site%3Awww.netflix.com%2Ftitle%2F+{}<br>#rso > div:first-child> div > div.yuRUbf > a<br>href<br>0<br>replace<br>0<br>title<br>watch<br>firstLink
+
 
 ## To do
 https://trello.com/b/dSpY8vhz/progress-tracker

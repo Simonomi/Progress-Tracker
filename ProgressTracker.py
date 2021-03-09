@@ -2,37 +2,61 @@
 # Thank you to https://www.tvmaze.com/api
 from tkinter import *
 from tkinter import ttk, font, messagebox
+from tkinter.filedialog import askopenfilename
 from pathlib import Path
 from PIL import Image, ImageTk
-from zipfile import ZipFile
 from threading import Thread
-import os, pickle
+from glob import glob
+from os import path, mkdir
+from pickle import load, dump
 
 
-
-# Edit this variable to change where Progress.zip is stored
-dataPath = "{0}\\Dropbox\\".format(Path.home())
-tempPath = "{0}\\AppData\\Roaming\\ProgressTracker\\".format(Path.home())
-
+# Initializing some variables
+tempPath = "{}\\AppData\\Roaming\\ProgressTracker\\".format(Path.home())
+showVersion = 1.2
 data = []
 sites = []
 pictures = {}
+offline = False
 addingShows = 0
-showVersion = 1.1
 currentShow = None
 smallPictures = {}
 currentShowNum = 0
-errorUrl = "https://static.tvmaze.com/images/no-img/no-img-portrait-text.png"
-
-# Optional toggles, should be bult-in later
-showDownloadProgress = False
-showUpdateProgress = False
 showLinkInfo = False
-browserTimeout = 15
-hideBrowser = True
+
+
+# Default values
+dataPath = "{}\\Desktop\\Progress.dat".format(Path.home())
+errorUrl = "https://static.tvmaze.com/images/no-img/no-img-portrait-text.png"
+showImageProgress = False
+showUpdateProgress = False
+browserTimeout = 30
+showBrowser = False
 darkMode = True
 slowMode = True
-offline = False
+
+if not path.exists(tempPath + "settings.conf"):
+	with open(tempPath + "settings.conf", "w") as file:
+		file.write("")
+with open(tempPath + "settings.conf") as file:
+	preferences = file.read().split("\n")
+	for i in range(0, len(preferences), 2):
+		if preferences[i] == "fileLocation":
+			dataPath = preferences[i + 1].format(Path.home())
+		if preferences[i] == "errorUrl":
+			errorUrl = preferences[i + 1]
+		if preferences[i] == "showImageProgress":
+			showImageProgress = preferences[i + 1] == "True"
+		if preferences[i] == "showUpdateProgress":
+			showUpdateProgress = preferences[i + 1] == "True"
+		if preferences[i] == "browserTimeout":
+			browserTimeout = int(preferences[i + 1])
+		if preferences[i] == "showBrowser":
+			showBrowser = preferences[i + 1] == "True"
+		if preferences[i] == "darkMode":
+			darkMode = preferences[i + 1] == "True"
+		if preferences[i] == "slowMode":
+			slowMode = preferences[i + 1] == "True"
 
 
 
@@ -81,8 +105,8 @@ class Show:
 		else:
 			self.id = int(info)
 			
-			import json
-			showDataDict = json.loads(getSourceCode("https://api.tvmaze.com/shows/{0}?embed=seasons".format(self.id)))
+			from json import loads, decoder
+			showDataDict = loads(getSourceCode("https://api.tvmaze.com/shows/{0}?embed=seasons".format(self.id)))
 			
 			seasons = []
 			for i in showDataDict["_embedded"]["seasons"]:
@@ -91,7 +115,7 @@ class Show:
 						seasons.append(i["episodeOrder"])
 					else:
 						seasonEpisodes = getSourceCode("https://api.tvmaze.com/seasons/{0}/episodes".format(i["id"]))
-						seasonEpisodesDict = json.loads(seasonEpisodes)
+						seasonEpisodesDict = loads(seasonEpisodes)
 						for j in seasonEpisodesDict:
 							if not hasPassed(j["airdate"]):
 								seasons.append(int(j["number"]) - 1)
@@ -99,7 +123,7 @@ class Show:
 			
 			if None in seasons:
 				episodeList = getSourceCode("https://api.tvmaze.com/shows/{0}/episodes".format(showDataDict["id"]))
-				episodeListDict = json.loads(episodeList)
+				episodeListDict = loads(episodeList)
 
 				episodes = []
 				for i in range(0, len(episodeListDict)):
@@ -137,7 +161,31 @@ class Show:
 	
 	
 	def __lt__(self, other):
-		return self.title < other.title
+		selfStatus = self.getStatus()
+		otherStatus = other.getStatus()
+		
+		if selfStatus == otherStatus:
+			if self.starred == other.starred:
+				return self.title < other.title
+			elif self.starred and not other.starred:
+				return True
+			else:
+				return False
+		elif selfStatus < otherStatus:
+			return True
+		else:
+			return False
+		
+	
+	def getStatus(self):
+		if self.isComplete():
+			return "3complete"
+		elif self.discontinued:
+			return "4discontinued"
+		elif self.episodeProgress != 1:
+			return "1watching"
+		else:
+			return "2toWatch"
 	
 	
 	def getSeasonEpisode(self):
@@ -162,153 +210,47 @@ class Show:
 	
 	
 	def dump(self):
-		return {"id": self.id, "title": self.title, "imageLink": self.imageLink, "episodeData": self.episodeData, "status": self.status, "links": self.links, "episodeProgress": self.episodeProgress, "timeProgress": self.timeProgress, "originalTitle": self.originalTitle, "discontinued": self.discontinued, "autoMode": self.autoMode, "version": self.version}
+		return {"id": self.id, "title": self.title, "imageLink": self.imageLink, "episodeData": self.episodeData, "status": self.status, "links": self.links, "episodeProgress": self.episodeProgress, "timeProgress": self.timeProgress, "originalTitle": self.originalTitle, "discontinued": self.discontinued, "autoMode": self.autoMode, "version": self.version, "starred": self.starred}
 
 
 
 class Site:
-	def __init__(self, name, priority, searchUrl, searchElement, searchAttribute, seasons, pageElement, pageAttribute, episodes, flipPageOrder, flipSeasonOrder):
-		self.name = name
-		self.priority = int(priority)
-		self.searchUrl = searchUrl
-		self.searchElement = searchElement
-		self.searchAttribute = searchAttribute
-		self.seasons = seasons == "True"
-		self.pageElement = pageElement
-		self.pageAttribute = pageAttribute
-		self.episodes = episodes == "True"
-		self.flipPageOrder = flipPageOrder == "True"
-		self.flipSeasonOrder = flipSeasonOrder == "True"
-	
-	
-	def __str__(self):
-		return "<Site \"{}\">".format(self.name)
+	def __init__(self, file):
+		with open(file) as site:
+			info = site.read().split("\n")
+			
+			self.name = ".".join(file.split("\\")[-1].split(".")[:-1])
+			self.priority = int(info[0].split(": ")[1])
+			self.multipleSeasons = info[1].split(": ")[1] == "True"
+			self.downloadable = info[2].split(": ")[1] == "True"
+			
+			self.firstLink = "\n".join(info[3:]).split("firstLink")[1].split("\n")[1:-1]
+			if self.downloadable:
+				self.downloadEpisode = "\n".join(info[3:]).split("downloadEpisode")[1].split("\n")[1:-1]
 	
 	
 	def __lt__(self, other):
 		return self.priority < other.priority
 	
 	
-	def search(self, title, episodeData):
-		seasons = getElementAttribute(self.searchUrl.format(title), self.searchElement, self.searchAttribute, self.seasons)
+	def __repr__(self):
+		return "<Site {}>".format(self.name)
+	
+	
+	def getLinks(self, string, parent):
+		links = modifyString(self.firstLink, string, parent)
 		
-		if self.flipSeasonOrder:
-			seasons.reverse()
+		if self.multipleSeasons:
+			for i in range(2, len(currentShow.episodeData) + 1):
+				links += "\n" + modifyString(self.firstLink, "{} {}".format(string, i), parent)
+				if links[-1] == "\n":
+					return links[:-1]
 		
-		episodes = []
-		for i in range(len(seasons[:len(episodeData)])):
-			episodes.append(getElementAttribute(seasons[i], self.pageElement, self.pageAttribute, self.episodes))
-			
-			if self.flipPageOrder:
-				episodes[-1].reverse()
-			episodes[-1] = episodes[-1][:2]
-		
-		if episodes == []:
-			return []
-		
-		if self.seasons:
-			if self.episodes:
-				seasonLinks = []
-				
-				for i in episodes:
-					decoded = []
-					decodedGroups = []
-					for j in i:
-						decoded.append(decodePart64(j))
-						decodedGroups.append(getGroups(decoded[-1]))
-					
-					for i in range(len(decodedGroups[0])):
-						if len(decodedGroups) == 1 or not decodedGroups[0][i] == decodedGroups[1][i]:
-							start = decodedGroups[0][i][0]
-							end = start + len(decodedGroups[0][i][1])
-							number = decoded[0][start:end]
-							
-							seasonLinks.append(getNumberType(number, "e", 1).join([decoded[0][:start], decoded[0][end:]]))
-							break
-				
-				out = []
-				consider = []
-				for i in seasonLinks:
-					groups = getGroups(i)
-					
-					if groups == []:
-						out.append(i)
-					else:
-						groups = (groups[0][0], getNumberType(groups[0][1], "s"))
-						consider.append((i, groups))
-				
-				if consider:
-					common = consider[0][1]
-					commons = [consider[0][0]]
-					for i in consider[1:]:
-						if i[1] == common:
-							commons.append(i[0])
-						else:
-							start = common[0]
-							end = start + len(common[1]) - 2
-							number = commons[0][start:end]
-							out.append(getNumberType(number, "s").join([commons[0][:start], commons[0][end:]]))
-							
-							common = i[1]
-							commons = [i[0]]
-					
-					start = common[0]
-					end = start + len(common[1]) - 2
-					number = commons[0][start:end]
-					out.append(getNumberType(number, "s").join([commons[0][:start], commons[0][end:]]))
-				
-				return out
-			else:
-				out = []
-				consider = []
-				for i in episodes:
-					groups = getGroups(i[0])
-					
-					if groups == []:
-						out.append(i[0])
-					else:
-						groups = (groups[0][0], getNumberType(groups[0][1], "s"))
-						consider.append((i[0], groups))
-				
-				common = consider[0][1]
-				commons = [consider[0][0]]
-				for i in consider[1:]:
-					if i[1] == common:
-						commons.append(i[0])
-					else:
-						start = common[0]
-						end = start + len(common[1]) - 2
-						number = commons[0][start:end]
-						out.append(getNumberType(number, "s").join([commons[0][:start], commons[0][end:]]))
-						
-						common = i[1]
-						commons = [i[0]]
-				
-				start = common[0]
-				end = start + len(common[1]) - 2
-				number = commons[0][start:end]
-				out.append(getNumberType(number, "s").join([commons[0][:start], commons[0][end:]]))
-				
-				return out
-		else:
-			if self.episodes:
-				decoded = []
-				decodedGroups = []
-				for i in episodes:
-					for j in i:
-						decoded.append(decodePart64(j))
-						decodedGroups.append(getGroups(decoded[-1]))
-				
-				for i in range(len(decodedGroups[0])):
-					if not decodedGroups[0][i] == decodedGroups[1][i]:
-						start = decodedGroups[0][i][0]
-						end = start + len(decodedGroups[0][i][1])
-						number = decoded[0][start:end]
-						
-						return [getNumberType(number, "te", 1).join([decoded[0][:start], decoded[0][end:]])]
-						break
-			else:
-				return [episodes[0][0]]
+		return links
+	
+	
+	def getDownloadLink(self, link):
+		return modifyString(self.downloadEpisode, link)
 
 
 
@@ -319,11 +261,11 @@ class ShowOptionsWindow:
 		self.search = search
 		
 		showData = getSourceCode("https://api.tvmaze.com/search/shows?q={0}&embed=seasons".format(self.search))
-		import json
+		from json import loads, decoder
 		
 		try:
-			showDataDict = json.loads(showData)
-		except json.decoder.JSONDecodeError:
+			showDataDict = loads(showData)
+		except decoder.JSONDecodeError:
 			print("ERROR: Invalid search: {0}".format(self.search))
 			return
 		
@@ -362,7 +304,7 @@ class ShowOptionsWindow:
 			self.optionsMenu.resizable(False, False)
 			self.optionsMenu.focus_set()
 			
-			self.optionsMenu.bind("<Control-w>", lambda x: root.destroy())
+			self.optionsMenu.bind("<Control-w>", lambda x: self.optionsMenu.destroy())
 			self.optionsMenu.bind("<Escape>", lambda x: self.optionsMenu.destroy())
 			
 			self.optionsMenu.bind("<Up>", lambda x: self.options[0].choiceFrame.focus_set() if self.optionsMenu.focus_get() == self.optionsMenu else False)
@@ -396,11 +338,12 @@ class ShowOptionsWindow:
 		
 		addingShows -= 1
 		if addingShows == 0:
-			addButton.grid(column=0, row=2, columnspan=2, sticky="nsew", pady=3, padx=3)
+			addButton.grid(column=0, row=3, columnspan=2, sticky="nsew", pady=3, padx=3)
 			addProgress.grid_forget()
 			
 			root.bind("<Control-n>", lambda x: addShowButton())
 			settingsButton['state'] = NORMAL
+	
 	
 	def focusShow(self, x, y):
 		if y < 0:
@@ -456,11 +399,13 @@ class ShowOption:
 		self.showPhoto.bind("<Button-1>", lambda x: self.selectShow())
 		self.showName.bind("<Button-1>", lambda x: self.selectShow())
 	
+	
 	def setHovered(self, hovered):
 		if hovered:
 			self.showName.grid(row=0, sticky="sew", pady=2)
 		else:
 			self.showName.grid_forget()
+	
 	
 	def selectShow(self):
 		self.parent.destroy()
@@ -493,7 +438,7 @@ class SettingsWindow:
 		self.window.resizable(False, False)
 		
 		self.window.bind("<Destroy>", self.submit)
-		self.window.bind("<Control-w>", lambda x: root.destroy())
+		self.window.bind("<Control-w>", self.submit)
 		self.window.bind("<Escape>", self.submit)
 		root.bind("<FocusIn>", self.submit)
 		
@@ -507,7 +452,7 @@ class SettingsWindow:
 		self.episodeDataVar.set(",".join([str(x) for x in self.show.episodeData]))
 		self.autoVar.set(self.show.autoMode)
 		self.links = self.show.links
-		self.sites = [x.name for x in sites]
+		self.sites = list([x.name for x in sites])
 		
 		titleFrame = Frame(self.window, bg=backgroundColor)
 		titleFrame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=5, pady=3)
@@ -529,11 +474,14 @@ class SettingsWindow:
 		
 		titleLabel = Label(titleFrame, text="Title:", font=labelFont, fg=foregroundColor, bg=backgroundColor)
 		self.titleEntry = Entry(titleFrame, textvariable=self.titleVar, font=dataFont, fg=foregroundColor, bg=backgroundColor, insertbackground=foregroundColor, width=min(len(self.titleVar.get()) + 1, 100))
+		self.titleEntry.bind("<Return>", self.submit)
 		idLabel = Label(titleFrame, text="(ID: {})".format(self.show.id), font=labelFont, fg=foregroundColor, bg=backgroundColor)
 		progressLabel = Label(progressFrame, text="Episode Progress:", font=labelFont, fg=foregroundColor, bg=backgroundColor)
 		progressEntry = Entry(progressFrame, textvariable=self.progressVar, font=dataFont, fg=foregroundColor, bg=backgroundColor, insertbackground=foregroundColor, width=min(len(self.progressVar.get()) + 1, 100))
+		progressEntry.bind("<Return>", self.submit)
 		episodeDataLabel = Label(episodeDataFrame, text="Episode Data:", font=labelFont, fg=foregroundColor, bg=backgroundColor)
 		self.episodeDataEntry = Entry(episodeDataFrame, textvariable=self.episodeDataVar, font=dataFont, fg=foregroundColor, bg=backgroundColor, disabledforeground=disabledColor, disabledbackground=backgroundColor, insertbackground=foregroundColor, width=min(len(self.episodeDataVar.get()) + 1, 100))
+		self.episodeDataEntry.bind("<Return>", self.submit)
 		autoCheckbox = Checkbutton(episodeDataFrame, text="Auto", variable=self.autoVar, fg=foregroundColor, bg=backgroundColor, activeforeground=foregroundColor, activebackground=backgroundColor, selectcolor=backgroundColor, command=self.toggleAuto)
 		if self.show.autoMode:
 			self.episodeDataEntry["state"] = DISABLED
@@ -542,9 +490,10 @@ class SettingsWindow:
 		
 		linksLabel = Label(linkFrame, text="Links:", font=labelFont, fg=foregroundColor, bg=backgroundColor)
 		
-		style = ttk.Style()
-		style.configure("TCombobox", background="black", bordercolor="black", darkcolor="black", foreground="white", arrowcolor="white", lightcolor="grey")
-		style.map("TCombobox", fieldbackground=[("readonly", "black")], selectbackground=[("readonly", "black")], selectforeground=[("readonly", "white")], background=[("readonly", "black")])
+		if darkMode:
+			style = ttk.Style()
+			style.configure("TCombobox", background="black", bordercolor="black", darkcolor="black", foreground="white", arrowcolor="white", lightcolor="grey")
+			style.map("TCombobox", fieldbackground=[("readonly", "black")], selectbackground=[("readonly", "black")], selectforeground=[("readonly", "white")], background=[("readonly", "black")])
 		self.linkSitesCombobox = ttk.Combobox(linkFrame, values=self.sites, state="readonly", postcommand=self.saveLinks())
 		self.linkSitesCombobox.option_add("*TCombobox*Listbox.background", "black")
 		self.linkSitesCombobox.option_add("*TCombobox*Listbox.foreground", "white")
@@ -557,7 +506,7 @@ class SettingsWindow:
 		except:
 			pass
 		
-		self.linkText = Text(linkFrame, bg=backgroundColor, fg=foregroundColor, font=dataFont, insertbackground=foregroundColor, width=30, height=5)
+		self.linkText = Text(linkFrame, bg=backgroundColor, fg=foregroundColor, font=dataFont, insertbackground=foregroundColor, width=30, height=5, undo=True, autoseparators=True, maxundo=0)
 		try:
 			self.linkText.insert(END, "\n".join(self.links[self.sites[0]]))
 		except:
@@ -602,8 +551,11 @@ class SettingsWindow:
 	
 	def resetLink(self):
 		self.linkText.delete(0.0, END)
-		self.linkText.insert(END, "\n".join(sites[self.linkSitesCombobox.current()].search(self.show.title, self.show.episodeData)))
-		self.textSize()
+		try:
+			self.linkText.insert(END, sites[self.linkSitesCombobox.current()].getLinks(self.show.title, self))
+			self.textSize()
+		except TclError:
+			pass
 	
 	
 	def updateSize(self, event):
@@ -678,13 +630,190 @@ class SettingsWindow:
 		setShow()
 
 
+class PreferencesWindow():
+	def __init__(self):
+		self.window = Toplevel(bg=backgroundColor)
+		
+		self.window.title("Preferences")
+		self.window.resizable(False, False)
+		self.window.focus_set()
+		
+		self.window.bind("<Destroy>", self.submit)
+		self.window.bind("<Control-w>", self.submit)
+		self.window.bind("<Escape>", self.submit)
+		root.bind("<FocusIn>", self.submit)
+		
+		self.fileLocationVar = StringVar()
+		self.errorUrlVar = StringVar()
+		self.browserTimeoutVar = IntVar()
+		
+		self.fileLocationVar.set(dataPath.replace(str(Path.home()), "{}"))
+		self.errorUrlVar.set(errorUrl)
+		self.browserTimeoutVar.set(browserTimeout)
+		
+		self.showUpdateProgressVar = IntVar()
+		self.showImageProgressVar = IntVar()
+		self.slowModeVar = IntVar()
+		self.showBrowserVar = IntVar()
+		self.darkModeVar = IntVar()
+		
+		if darkMode:
+			self.darkModeVar.set(1)
+		if slowMode:
+			self.slowModeVar.set(1)
+		if showBrowser:
+			self.showBrowserVar.set(1)
+		if showImageProgress:
+			self.showImageProgressVar.set(1)
+		if showUpdateProgress:
+			self.showUpdateProgressVar.set(1)
+		
+		self.textFrame = Frame(self.window, bg=backgroundColor)
+		self.fileLocationEntry = Entry(self.textFrame, textvariable=self.fileLocationVar, width=75, font=dataFont, fg=foregroundColor, bg=backgroundColor, insertbackground=foregroundColor)
+		self.errorUrlEntry = Entry(self.textFrame, textvariable=self.errorUrlVar, width=75, font=dataFont, fg=foregroundColor, bg=backgroundColor, insertbackground=foregroundColor)
+		
+		if darkMode:
+			style = ttk.Style()
+			style.configure("TSpinbox", background="black", bordercolor="black", darkcolor="black", foreground="white", arrowcolor="white", lightcolor="grey", fieldbackground="black", insertcolor="white")
+		self.browserTimeoutEntry = ttk.Spinbox(self.textFrame, textvariable=self.browserTimeoutVar, width=5, font=dataFont, values=list(range(1, 60)))
+		
+		self.fileLocationEntry.grid(row=0, column=0, padx=2, pady=2)
+		self.errorUrlEntry.grid(row=1, column=0, padx=2, pady=2)
+		self.browserTimeoutEntry.grid(row=2, column=0, padx=2, pady=2, sticky="w")
+		self.textFrame.grid(row=0, column=0, padx=2, pady=2, sticky="nw")
+		
+		self.checkFrame = Frame(self.window, bg=backgroundColor)
+		self.darkModeCheckbutton = Checkbutton(self.checkFrame, text="Dark mode", fg=foregroundColor, bg=backgroundColor, activeforeground=foregroundColor, activebackground=backgroundColor, selectcolor=backgroundColor, variable=self.darkModeVar)
+		self.slowModeCheckbutton = Checkbutton(self.checkFrame, text="Slow mode", fg=foregroundColor, bg=backgroundColor, activeforeground=foregroundColor, activebackground=backgroundColor, selectcolor=backgroundColor, variable=self.slowModeVar)
+		self.showBrowserCheckbutton = Checkbutton(self.checkFrame, text="Show browser", fg=foregroundColor, bg=backgroundColor, activeforeground=foregroundColor, activebackground=backgroundColor, selectcolor=backgroundColor, variable=self.showBrowserVar)
+		self.showImageProgressCheckbutton = Checkbutton(self.checkFrame, text="Show image downloading progressbar", fg=foregroundColor, bg=backgroundColor, activeforeground=foregroundColor, activebackground=backgroundColor, selectcolor=backgroundColor, variable=self.showImageProgressVar)
+		self.showUpdateProgressCheckbutton = Checkbutton(self.checkFrame, text="Show updating shows progressbar", fg=foregroundColor, bg=backgroundColor, activeforeground=foregroundColor, activebackground=backgroundColor, selectcolor=backgroundColor, variable=self.showUpdateProgressVar)
+		
+		self.darkModeCheckbutton.grid(row=0, column=0, padx=2, pady=2, sticky="nw")
+		self.slowModeCheckbutton.grid(row=1, column=0, padx=2, pady=2, sticky="nw")
+		self.showBrowserCheckbutton.grid(row=2, column=0, padx=2, pady=2, sticky="nw")
+		self.showImageProgressCheckbutton.grid(row=3, column=0, padx=2, pady=2, sticky="nw")
+		self.showUpdateProgressCheckbutton.grid(row=4, column=0, padx=2, pady=2, sticky="nw")
+		self.checkFrame.grid(row=0, column=1, padx=2, pady=2, sticky="nw")
+	
+	
+	def submit(self, event):
+		global dataPath, errorUrl, showImageProgress, showUpdateProgress, browserTimeout, showBrowser, darkMode, slowMode, downloadProgress, updateProgress, completedShows
+		
+		root.unbind("<FocusIn>")
+		self.window.unbind("<Destroy>")
+		self.window.unbind("<Control-w>")
+		self.window.unbind("<Escape>")
+		
+		with open(tempPath + "settings.conf", "w") as file:
+			dataPath = self.fileLocationVar.get().format(Path.home())
+			errorUrl = self.errorUrlVar.get()
+			
+			showImageProgress = self.showImageProgressVar.get() == 1
+			try:
+				downloadProgress.destroy()
+			except:
+				pass
+			if showImageProgress:
+				downloadProgress = ProgressBar(root, len(set([x.id for x in data])), "Images")
+				downloadProgress.set(len(pictures))
+			
+			showUpdateProgress = self.showUpdateProgressVar.get() == 1
+			try:
+				updateProgress.destroy()
+			except:
+				pass
+			if showUpdateProgress:
+				updateProgress = ProgressBar(root, len(data), "Updates")
+				updateProgress.set(len(completedShows))
+			
+			browserTimeout = self.browserTimeoutVar.get()
+			showBrowser = self.showBrowserVar.get() == 1
+			darkMode = self.darkModeVar.get() == 1
+			slowMode = self.slowModeVar.get() == 1
+			
+			if self.fileLocationVar.get() != "{}\\Desktop\\Progress.dat":
+				file.write("fileLocation\n")
+				file.write(self.fileLocationVar.get() + "\n")
+			if self.errorUrlVar.get() != "https://static.tvmaze.com/images/no-img/no-img-portrait-text.png":
+				file.write("errorUrl\n")
+				file.write(self.errorUrlVar.get() + "\n")
+			if self.showImageProgressVar.get() != 0:
+				file.write("showImageProgress\n")
+				file.write("True\n")
+			if self.showUpdateProgressVar.get() != 0:
+				file.write("showUpdateProgress\n")
+				file.write("True\n")
+			if self.browserTimeoutVar.get() != 30:
+				file.write("browserTimeout\n")
+				file.write(str(self.browserTimeoutVar.get()) + "\n")
+			if self.showBrowserVar.get() != 0:
+				file.write("showBrowser\n")
+				file.write("True\n")
+			if self.darkModeVar.get() != 1:
+				file.write("darkMode\n")
+				file.write("False\n")
+			if self.slowModeVar.get() != 1:
+				file.write("slowMode\n")
+				file.write("False\n")
+		
+		self.window.destroy()
+
+
+
+class ProgressBar:
+	def __init__(self, parent, maximum, label=""):
+		self.maximum = maximum
+		
+		self.frame = Frame(parent, bg=backgroundColor)
+		
+		if darkMode:
+			self.bar = ttk.Progressbar(self.frame, orient=HORIZONTAL, length=296, maximum=self.maximum, mode="determinate", style="My.Horizontal.TProgressbar")
+		else:
+			self.bar = ttk.Progressbar(self.frame, orient=HORIZONTAL, length=296, maximum=self.maximum, mode="determinate")
+		self.bar.grid(row=0, column=0, padx=2, pady=2)
+		
+		self.button = Button(self.frame, text="Hide", command=self.destroy, fg=foregroundColor, bg=backgroundColor, activebackground=buttonPressedColor, activeforeground=buttonPressedTextColor)
+		self.button.grid(row=0, column=1, padx=2, pady=2)
+		
+		if label != "":
+			self.label = Label(self.frame, text=label, font=labelFont, bg=backgroundColor, fg=foregroundColor)
+			self.label.grid(row=0, column=2, padx=2, pady=2)
+		
+		self.frame.grid(columnspan=4, sticky="ew")
+	
+	
+	def isComplete(self):
+		return self.bar["value"] >= self.maximum
+	
+	
+	def destroy(self, x=None):
+		self.frame.grid_forget()
+		self.bar["value"] = self.maximum
+	
+	
+	def add(self, n=1):
+		self.bar["value"] += n
+		
+		if self.isComplete():
+			self.destroy()
+	
+	
+	def set(self, n=1):
+		self.bar["value"] = n
+		
+		if self.isComplete():
+			self.destroy()
+
+
 
 # Simple functions def _______________SIMPLE FUNCTIONS:
 def getSourceCode(url):
-	import urllib.request, requests
+	from requests import get, exceptions
+	import urllib.request
 	try:
-		return requests.get(url).text
-	except (urllib.error.URLError, requests.exceptions.SSLError, requests.exceptions.ConnectionError):
+		return get(url).text
+	except (urllib.error.URLError, exceptions.SSLError, exceptions.ConnectionError):
 		goOffline()
 
 
@@ -694,8 +823,8 @@ def removeForbidden(string):
 
 # Takes in a date as "m-d-y"
 def hasPassed(date):
-	import datetime
-	return (datetime.datetime.now() - datetime.datetime(int(date.split("-")[0]), int(date.split("-")[1]), int(date.split("-")[2]))).days >= 0
+	from datetime import datetime
+	return (datetime.now() - datetime(int(date.split("-")[0]), int(date.split("-")[1]), int(date.split("-")[2]))).days >= 0
 
 
 def askMultipleChoice(prompt, options):
@@ -718,33 +847,27 @@ def askMultipleChoice(prompt, options):
 	return var.get()
 
 
-def getElementAttribute(url, element, attribute, returnList=False):
+def getElementAttribute(url, element, attribute):
 	try:
 		from lxml import etree
-		import urllib.request, requests
+		from requests import get, exceptions
+		import urllib.request
 		try:
-			r = requests.get(url)
+			r = get(url)
 			html = r.text
-		except requests.exceptions.SSLError:
+		except exceptions.SSLError:
 			html = ""
 		
 		try:
 			root = etree.HTML(html)
 			
-			if returnList:
-				output = []
-				for i in root.cssselect(element):
-					output.append(i.get(attribute))
-					if output[-1][0] == "/":
-						output[-1] = "/".join(url.split("/")[:3]) + output[-1]
-				
-				return output
-			else:
-				output = root.cssselect(element)[0].get(attribute)
-				
-				if output[0] == "/":
-					return ["/".join(url.split("/")[:3]) + output]
-				return [output]
+			output = []
+			for i in root.cssselect(element):
+				output.append(i.get(attribute))
+				if output[-1][0] == "/":
+					output[-1] = "/".join(url.split("/")[:3]) + output[-1]
+			
+			return output
 		except (IndexError, AttributeError):
 			from selenium import webdriver
 			from selenium.webdriver.support import expected_conditions as EC
@@ -753,7 +876,7 @@ def getElementAttribute(url, element, attribute, returnList=False):
 			from selenium.common.exceptions import TimeoutException
 			
 			options = webdriver.ChromeOptions()
-			if hideBrowser:
+			if not showBrowser:
 				options.add_argument("--window-size=0,0")
 				options.add_argument("--window-position=3000,3000")
 			
@@ -763,226 +886,116 @@ def getElementAttribute(url, element, attribute, returnList=False):
 			options.add_experimental_option('useAutomationExtension', False)
 			
 			browser = webdriver.Chrome("C:\Program Files\ChromeDriver\chromedriver.exe", options=options)
-			if hideBrowser:
+			if not showBrowser:
 				browser.minimize_window()
 			
 			browser.get(url)
 			
 			browser.execute_script("window.open('/');")
-			if hideBrowser:
+			if not showBrowser:
 				browser.minimize_window()
 			
 			try:
 				WebDriverWait(browser, browserTimeout).until(EC.presence_of_element_located((By.CSS_SELECTOR, "{0}[{1}]".format(element, attribute))))
 			except TimeoutException:
+				print("hi")
 				browser.quit()
 				return []
-
+			
 			html = browser.page_source.encode("cp1252", "ignore").decode('cp1252')
 			
 			browser.quit()
 			
 			root = etree.HTML(html)
 			
-			if returnList:
-				output = []
-				for i in root.cssselect(element):
-					output.append(i.get(attribute))
-					if output[-1][0] == "/":
-						output[-1] = "/".join(url.split("/")[:3]) + output[-1]
-				
-				return output
-			else:
-				output = root.cssselect(element)[0].get(attribute)
-				
-				if output[0] == "/":
-					return ["/".join(url.split("/")[:3]) + output]
-				return [output]
-	except (urllib.error.URLError, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+			output = []
+			for i in root.cssselect(element):
+				output.append(i.get(attribute))
+				if output[-1][0] == "/":
+					output[-1] = "/".join(url.split("/")[:3]) + output[-1]
+			
+			return output
+	except (urllib.error.URLError, exceptions.SSLError, exceptions.ConnectionError) as e:
 		goOffline()
 
 
-def decodePart64(link):
-	import base64
+def modifyString(instructions, string, parent=None):
+	string = [string]
 	
-	alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	linkParts = []
-	newLinkParts = []
-	
-	temp = ""
-	for i in link:
-		if i in alphabet:
-			temp += i
-		else:
-			linkParts.append(temp)
-			temp = ""
-	linkParts.append(temp)
-	
-	for i in linkParts:
-		try:
-			code = i + (len(i) % 4 * "=")
-			decoded = base64.b64decode(bytes(code, "UTF-8")).decode("utf-8")
+	for i in range(len(instructions)):
+		word = instructions[i]
+		
+		if word in ["getElementAttribute", "replace", "split", "insert", "debase", "add"]:
+			index = int(instructions[i + 1])
 			
-			if decoded == decoded.encode("cp1252", "ignore").decode('cp1252'):
-				newLinkParts.append(decoded)
-			else:
-				raise ValueError
-		except:
-			newLinkParts.append(i)
-			pass
+			if word == "getElementAttribute":
+				results = getElementAttribute(instructions[i + 2].format(string[index]), instructions[i + 3], instructions[i + 4])
+				if results == []:
+					if parent:
+						parent.window.unbind("<Destroy>")
+						messagebox.showinfo("No Results Found", "No search results were found for the search {}".format(string[0]), parent=parent.window)
+						if parent.window.winfo_exists():
+							parent.window.bind("<Destroy>", parent.submit)
+					return ""
+				
+				string[index] = results[int(instructions[i + 5])]
+			elif word == "replace":
+				string[index] = string[index].replace(instructions[i + 2], instructions[i + 3])
+			elif word == "split":
+				from re import split
+				string = string[:index] + split(instructions[i + 2], string[index]) + string[index + 1:]
+			elif word == "insert":
+				string.insert(index, instructions[i + 2])
+			elif word == "debase":
+				from base64 import b64decode
+				string[index] = b64decode(bytes(string[index] + (len(string[index]) % 4 * "="), "UTF-8")).decode("utf-8")
+			elif word == "add":
+				string[index] = str(int(string[index]) + int(instructions[i + 2]))
 
-	for i in range(len(linkParts)):
-		if newLinkParts[i] != linkParts[i]:
-			link = link.replace(linkParts[i], "[b64]{}[/b64]".format(newLinkParts[i]))
-	return link
-
-
-def getGroups(link):
-	digits = "0123456789"
-	lastDigit = False
-	currentGroup = ""
-	digitGroups = []
-	lastIndex = 0
-	skip = False
-	
-	link = "/".join([len("*".join(link.split("/")[:3])) * "*", *link.split("/")[3:]])
-	
-	for i in link:
-		if i == "[":
-			skip = True
-		elif i == "]":
-			skip = False
-		elif not skip:
-			if i in digits:
-				if lastDigit:
-					currentGroup += i
-				else:
-					currentGroup = i
-				lastDigit = True
-			elif lastDigit:
-				if currentGroup[-1] in "snrt":
-					if currentGroup[-1] == "s" and i == "t":
-						currentGroup += i
-					elif currentGroup[-1] in "nr" and i == "d":
-						currentGroup += i
-					elif currentGroup[-1] in "t" and i == "h":
-						currentGroup += i
-					else:
-						currentGroup = currentGroup[:-1]
-					digitGroups.append((link.index(currentGroup, lastIndex), currentGroup))
-					lastIndex = digitGroups[-1][0] + 1
-					lastDigit = False
-				else:
-					if i == "s":
-						currentGroup += i
-					elif i == "n":
-						currentGroup += i
-					elif i == "r":
-						currentGroup += i
-					elif i == "t":
-						currentGroup += i
-					else:
-						digitGroups.append((link.index(currentGroup, lastIndex), currentGroup))
-						lastIndex = digitGroups[-1][0] + 1
-						lastDigit = False
-	if lastDigit:
-		if currentGroup[-1] in "snrt":
-			currentGroup = currentGroup[:-1]
-		digitGroups.append((link.index(currentGroup, lastIndex), currentGroup))
-		lastIndex = digitGroups[-1][0] + 1
-	
-	return digitGroups
-
-
-def getNumberType(number, type, episode=None):
-	if number[0] == "0":
-		if episode:
-			add = int(number) - episode
-			if add > 0:
-				return "[{0}{1}+{2}]".format((len(number) - 1) * "0", type, add)
-			elif add == 0:
-				return "[{0}{1}]".format((len(number) - 1) * "0", type)
-			else:
-				return "[{0}{1}{2}]".format((len(number) - 1) * "0", type, add)
-			return "[{0}{1}]".format((len(number) - 1) * "0", type)
-	elif number[-1] in "tdh":
-		return "[{}nd]".format(type)
-	else:
-		if episode:
-			add = int(number) - episode
-			if add > 0:
-				return "[{0}+{1}]".format(type, add)
-			elif add == 0:
-				return "[{}]".format(type)
-			else:
-				return "[{0}{1}]".format(type, add)
-		else:
-			return "[{}]".format(type)
+	return "".join(string)
 
 
 
 # Unique functions def ______________UNIQUE FUNCTIONS:
-def loadSites():
-	global sites, showLinkInfo
-	if not os.path.exists(tempPath + "Sites\\"):
-		os.mkdir(tempPath + "Sites\\")
-		return
-	
-	import glob
-	for i in glob.glob(tempPath + "Sites\\*.site"):
-		with open(i) as file:
-			sites.append(Site(".".join(i.split("\\")[-1].split(".")[:-1]), *file.read().split("\n")))
-	
-	sites = sorted(sites)
-	if len(sites) > 0:
-		showLinkInfo = True
-
-
 def goOffline():
 	global offline
 	if not offline:
-		print("Offline mode enabled")
+		from time import sleep
+		sleep(.001)
+		
+		banner.grid(row=0, column=0, columnspan=4, sticky="new")
+		banner.bind("<Button-1>", goOnline)
+		bannerText.bind("<Button-1>", goOnline)
+	
 	offline = True
 	addButton["state"] = DISABLED
+
+
+def goOnline(event=None):
+	global offline
+	banner.grid_forget()
+	offline = False
+	addButton["state"] = NORMAL
+	
+	setShow()
+	Thread(target=downloadImages, daemon=True).start()
+	Thread(target=updateShows, daemon=True).start()
 
 
 def sortData():
 	global data
 	
 	data = sorted(data)
-	complete = []
-	discontinued = []
-	watching = []
-	watchingStar = []
-	toWatch = []
-	toWatchStar = []
-	
-	for i in data:
-		if i.isComplete():
-			complete.append(i)
-		elif i.discontinued:
-			discontinued.append(i)
-		elif i.episodeProgress != 1:
-			if i.starred:
-				watchingStar.append(i)
-			else:
-				watching.append(i)
-		else:
-			if i.starred:
-				toWatchStar.append(i)
-			else:
-				toWatch.append(i)
-	
-	data = [*watchingStar, *watching, *toWatchStar, *toWatch, *complete, *discontinued]
 	showList.set(data)
 	
-	finishedStart = len(watchingStar) + len(watching) + len(toWatchStar) + len(toWatch)
-	finishedEnd = len(watchingStar) + len(watching) + len(toWatchStar) + len(toWatch) + len(complete)
+	watchingEnd = len([x for x in data if x.getStatus() in ["1watching"]])
+	toWatchEnd = len([x for x in data if x.getStatus() in ["1watching", "2toWatch"]])
+	finishedEnd = len([x for x in data if x.getStatus() in ["1watching", "2toWatch", "3complete"]])
 	
 	for i in range(0, len(data)):
-		if i < len(watchingStar) + len(watching):
+		if i < watchingEnd:
 			showListBox.itemconfigure(i, background=listBoxWatchingColor, foreground=listBoxWatchingTextColor)
-		elif i >= finishedStart and i < finishedEnd:
+		elif i >= toWatchEnd and i < finishedEnd:
 			showListBox.itemconfigure(i, background=listBoxWatchedColor, foreground=listBoxWatchedTextColor)
 		elif i >= finishedEnd:
 			showListBox.itemconfigure(i, background=listBoxDiscontinuedColor, foreground=listBoxDiscontinuedTextColor)
@@ -997,23 +1010,31 @@ def downloadImage(show, small = False):
 	import urllib.request
 	global smallPictures, pictures
 	
+	if "error" not in pictures:
+		try:
+			pictures["error"] = ImageTk.PhotoImage(Image.open(tempPath + "error.jpg").resize((210, 295)))
+		except FileNotFoundError:
+			urllib.request.urlretrieve(errorUrl, tempPath + "error.jpg")
+	
 	if show.id == currentShow.id and show.id in pictures:
 		return
 	
-	if not os.path.exists(tempPath + "Images\\"):
-		os.mkdir(tempPath + "Images\\")
+	if not path.exists(tempPath + "Images\\"):
+		mkdir(tempPath + "Images\\")
 	
-	if show.imageLink == "" or offline:
+	if show.imageLink == "":
 		imageDestination = tempPath + "error.jpg"
+	elif offline:
+		return
 	else:
 		imageDestination = "{0}{1}.jpg".format(tempPath + "Images\\", show.id)
-	
-	if not (os.path.exists(imageDestination) and os.path.getsize(imageDestination) != 0):
-		try:
-			urllib.request.urlretrieve(show.imageLink, imageDestination)
-		except:
-			imageDestination = tempPath + "error.jpg"
-			goOffline()
+		
+		if not (path.exists(imageDestination) and path.getsize(imageDestination) != 0):
+			try:
+				urllib.request.urlretrieve(show.imageLink, imageDestination)
+			except:
+				goOffline()
+				return
 	
 	try:
 		if small:
@@ -1023,44 +1044,51 @@ def downloadImage(show, small = False):
 	except:
 		try:
 			urllib.request.urlretrieve(show.imageLink, imageDestination)
+			
 			if small:
 				smallPictures[show.id] = ImageTk.PhotoImage(Image.open(imageDestination).resize((126, 177)))
 			else:
 				pictures[show.id] = ImageTk.PhotoImage(Image.open(imageDestination).resize((210, 295)))
 		except:
-			imageDestination = tempPath + "error.jpg"
 			goOffline()
+			return
 
 
 def downloadImages():
-	for i in data[1:]:
+	for i in data:
 		Thread(target=lambda: downloadImage(i), daemon=True).start()
 	
-	if showDownloadProgress:
+	if showImageProgress:
 		global downloadProgress
-		import progressbar.bar
-		downloadProgress = progressbar.bar.ProgressBar(0, len(data))
-		downloadProgress.update(0)
+		try:
+			downloadProgress.destroy()
+		except:
+			pass
+		downloadProgress = ProgressBar(root, len(set([x.id for x in data])), "Images")
 		
-		import time
+		from time import sleep
 		while len(pictures) < len(set([x.id for x in data])):
-			if len(pictures) != downloadProgress.value:
-				downloadProgress.update(len(pictures))
-			time.sleep(.1)
-		downloadProgress.finish()
+			if len(pictures) != downloadProgress.bar["value"]:
+				downloadProgress.set(len(pictures))
+			sleep(.1)
+		downloadProgress.destroy()
 
 
 def updateShow(show, bypass=False):
 	if bypass or (show.autoMode and show.status != "Ended" and (not offline)):
 		showData = getSourceCode("http://api.tvmaze.com/shows/{0}?embed=seasons".format(show.id))
-		import json
+		from json import loads, decoder
 
 		try:
-			showDataDict = json.loads(showData)
-		except json.decoder.JSONDecodeError:
+			showDataDict = loads(showData)
+		except decoder.JSONDecodeError:
 			print("ERROR: Invalid show: {0}".format(repr(show)))
+			if showUpdateProgress and not updateProgress.isComplete():
+				updateProgress.add()
 			return
 		except TypeError:
+			if showUpdateProgress and not updateProgress.isComplete():
+				updateProgress.add()
 			return
 		
 		show.originalTitle = removeForbidden(showDataDict["name"])
@@ -1077,17 +1105,24 @@ def updateShow(show, bypass=False):
 					seasons.append(i["episodeOrder"])
 				else:
 					seasonEpisodes = getSourceCode("https://api.tvmaze.com/seasons/" + str(i["id"]) + "/episodes")
-					seasonEpisodesDict = json.loads(seasonEpisodes)
-					for j in seasonEpisodesDict:
-						if not hasPassed(j["airdate"]) and j["number"] != None:
-							seasons.append(int(j["number"]) - 1)
-							break
+					try:
+						seasonEpisodesDict = loads(seasonEpisodes)
+						for j in seasonEpisodesDict:
+							if not hasPassed(j["airdate"]) and j["number"] != None:
+								seasons.append(int(j["number"]) - 1)
+								break
+					except TypeError:
+						if showUpdateProgress and not updateProgress.isComplete():
+							updateProgress.add()
+						return
 		
 		if None in seasons:
 			episodeList = getSourceCode("https://api.tvmaze.com/shows/{0}/episodes".format(show.id))
 			try:
-				episodeListDict = json.loads(episodeList)
+				episodeListDict = loads(episodeList)
 			except TypeError:
+				if showUpdateProgress and not updateProgress.isComplete():
+					updateProgress.add()
 				return
 			
 			episodes = []
@@ -1101,21 +1136,24 @@ def updateShow(show, bypass=False):
 		
 		if show.episodeData != seasons:
 			show.episodeData = seasons
+			sortData()
 			setShow()
 	
-	if showUpdateProgress and not updateProgress.value == updateProgress.max_value:
-		if updateProgress.value == updateProgress.max_value - 1:
-			updateProgress.finish()
-		else:
-			updateProgress.update(updateProgress.value + 1)
+	completedShows.append("done")
+	if showUpdateProgress and not updateProgress.isComplete():
+		updateProgress.set(len(completedShows))
 
 
 def updateShows():
+	global completedShows
+	completedShows = []
 	if showUpdateProgress:
 		global updateProgress
-		import progressbar.bar
-		updateProgress = progressbar.bar.ProgressBar(0, len(data))
-		updateProgress.update(0)
+		try:
+			updateProgress.destroy()
+		except:
+			pass
+		updateProgress = ProgressBar(root, len(data), "Updates")
 	
 	if slowMode:
 		for i in data:
@@ -1143,8 +1181,8 @@ def setShow(show = None):
 		settingsButton.grid_forget()
 		return
 	elif len(data) == 1:
-		title.grid(column=2, row=0, sticky="nw", columnspan=3)
-		picture.grid(column=2, row=1, sticky="nw", rowspan=2)
+		title.grid(column=2, row=1, sticky="nw", columnspan=3)
+		picture.grid(column=2, row=2, sticky="nw", rowspan=2)
 		deleteButton.grid(column=0, row=6, sticky="new", pady=2)
 		settingsButton.grid(column=0, row=5, sticky="new", pady=2)
 	
@@ -1175,7 +1213,11 @@ def setShow(show = None):
 	
 	if currentShow.id not in list(pictures.keys()):
 		downloadImage(currentShow)
-	picture["image"] = pictures[currentShow.id]
+	
+	if currentShow.id not in list(pictures.keys()):
+		picture["image"] = pictures["error"]
+	else:
+		picture["image"] = pictures[currentShow.id]
 	
 	if currentShow.discontinued:
 		seasonProgress.set("Discontinued")
@@ -1239,7 +1281,7 @@ def setShow(show = None):
 # Main window commands def ____MAIN WINDOW COMMANDS:
 def addShowButton():
 	newShowName.set("")
-	addEntry.grid(column=0, row=2, columnspan=2, sticky="nsew", pady=3, padx=3)
+	addEntry.grid(column=0, row=3, columnspan=2, sticky="nsew", pady=3, padx=3)
 	addButton.grid_forget()
 	addEntry.focus_set()
 	root.bind("<Button-1>", click)
@@ -1256,7 +1298,7 @@ def click(x):
 
 
 def closeAddEntry(x = None):
-	addButton.grid(column=0, row=2, columnspan=2, sticky="nsew", pady=3, padx=3)
+	addButton.grid(column=0, row=3, columnspan=2, sticky="nsew", pady=3, padx=3)
 	addEntry.grid_forget()
 	showListBox.focus_set()
 	root.unbind("<Button-1>")
@@ -1267,7 +1309,7 @@ def submitAddEntry(x):
 	
 	settingsButton['state'] = DISABLED
 	addEntry.grid_forget()
-	addProgress.grid(column=0, row=2, columnspan=2, sticky="nsew", pady=3)
+	addProgress.grid(column=0, row=3, columnspan=2, sticky="nsew", pady=3)
 	addProgress.start()
 	showListBox.focus_set()
 	root.unbind("<Control-n>")
@@ -1292,9 +1334,10 @@ def openLink():
 	if not currentShow.links:
 		return
 	
-	for i in sites:
-		if i.name in currentShow.links:
-			links = currentShow.links[i.name]
+	for i in [x.name for x in sites]:
+		if i in currentShow.links:
+			siteName = i
+			links = currentShow.links[i]
 			break
 	
 	if len(links) > 1:
@@ -1405,12 +1448,16 @@ def openLink():
 						mod += "th"
 				link = link.replace("[snd]", mod)
 	while "[b64]" in link:
-		import base64
+		from base64 import b64encode
 		code = link.split("[b64]")[1].split("[/b64]")[0]
-		link = link.replace("[b64]{}[/b64]".format(code), base64.b64encode(bytes(code, "UTF-8")).decode("utf-8").strip("="))
+		link = link.replace("[b64]{}[/b64]".format(code), b64encode(bytes(code, "UTF-8")).decode("utf-8").strip("="))
 	
-	import webbrowser
-	webbrowser.open(link)
+	# site = [x for x in sites if x.name == siteName][0]
+	# if site.downloadable:
+		# print(site.getDownloadLink(link))
+	
+	from webbrowser import open
+	open(link)
 
 
 def completeEpisode():
@@ -1445,34 +1492,48 @@ def discontinueShow():
 
 # Menu bar def _______________________ MENU BAR:
 def refreshImageCache():
-	import shutil
+	from shutil import rmtree
 	global pictures
 	
 	try:
-		shutil.rmtree(tempPath + "Images")
+		rmtree(tempPath + "Images")
 	except PermissionError:
 		pass
 		
 	pictures = {}
 	setShow(0)
-	if showDownloadProgress:
+	if showImageProgress:
 		print()
 	Thread(target=downloadImages, daemon=True).start()
 
 
 def openPreferences():
-	print("Preferences")
+	PreferencesWindow()
 
 
 def importData():
-	print("Import data")
+	global data
+	filename = askopenfilename(title = "Select file",filetypes = [("DAT files","*.dat")])
+	if filename != "":
+		importData = load(open(filename, "rb"))
+		
+		if importData[0].version < showVersion:
+			for i in importData:
+				data.append(Show(i.dump()))
+		elif importData[0].version > showVersion:
+			messagebox.showinfo("Import Data", "Please update app to import this database")
+			return
+		else:
+			data += importData
+		
+		sortData()
+		messagebox.showinfo("Imported Data", "Successfully imported {0} shows:\n  {1}".format(len(importData), "\n  ".join([x.title for x in importData])))
 
 
 def exportData():
-	# print("Export data")
 	for i in data:
 		if i.isComplete():
-			print(i)
+			print(i.title)
 
 
 root = Tk()
@@ -1520,6 +1581,8 @@ else:
 	backgroundColor = "#f0f0f0"
 	foregroundColor = "#000000"
 	
+	disabledColor = "#808080"
+	
 	buttonPressedColor = "#f0f0f0"
 	buttonPressedTextColor = "#000000"
 	
@@ -1536,6 +1599,8 @@ else:
 	listBoxTextColor1 = "#000000"
 	listBoxTextColor2 = "#000000"
 
+bannerColor = "#00137F"
+
 root.config(bg=backgroundColor)
 
 
@@ -1551,23 +1616,30 @@ labelFont = font.Font(family='Times New Roman', size=16)
 dataFont = font.Font(family='Courier New', size=15, weight="bold")
 
 
+# Offline banner
+banner = Frame(root, bg=bannerColor, cursor="hand2")
+
+bannerText = Label(banner, text="You are offline, click to go online", bg=bannerColor, fg=foregroundColor, font=labelFont)
+bannerText.grid(padx=2)
+
+
 # Listbox
 showListBox = Listbox(root, listvariable=showList, height=19, exportselection=False, bg=backgroundColor, highlightcolor=backgroundColor, highlightbackground=backgroundColor)
 showListBox.bind("<<ListboxSelect>>", setShow)
-showListBox.grid(column=0, row=0, sticky="nsew", rowspan=2)
+showListBox.grid(column=0, row=1, sticky="nsew", rowspan=2)
 showListBox.focus_set()
 
 # Title
 title = Label(root, textvariable=showTitle, font=titleFont, bg=backgroundColor)
-title.grid(column=2, row=0, sticky="nw", columnspan=3)
+title.grid(column=2, row=1, sticky="nw", columnspan=3)
 
 # Picture
 picture = Label(root, bg=backgroundColor)
-picture.grid(column=2, row=1, sticky="nw", rowspan=2)
+picture.grid(column=2, row=2, sticky="nw", rowspan=2)
 
 # All show information/buttons
 dataFrame = Frame(root, bg=backgroundColor, padx=5)
-dataFrame.grid(column=3, row=1, sticky="nw")
+dataFrame.grid(column=3, row=2, sticky="nw")
 dataFrame.grid_columnconfigure(1, weight=1)
 
 # Progress information
@@ -1606,7 +1678,7 @@ discontinueButton = Button(dataFrame, text="Discontinue", command=discontinueSho
 
 # Add show button
 addButton = Button(root, text="Add show", command=addShowButton, fg=foregroundColor, bg=backgroundColor, activebackground=buttonPressedColor, activeforeground=buttonPressedTextColor)
-addButton.grid(column=0, row=2, columnspan=2, sticky="nsew", pady=3, padx=3)
+addButton.grid(column=0, row=3, columnspan=2, sticky="nsew", pady=3, padx=3)
 
 # Add show entry
 addEntry = Entry(root, textvariable=newShowName, fg=foregroundColor, bg=backgroundColor, insertbackground=foregroundColor)
@@ -1617,16 +1689,13 @@ addEntry.bind("<Enter>", lambda x: addEntryHovered(True))
 addEntry.bind("<Leave>", lambda x: addEntryHovered(False))
 
 
-# Dark mode style
-style = ttk.Style()
-style.theme_use("clam")
-style.configure("My.Horizontal.TProgressbar", foreground="black", background="black", troughcolor="black")
-
 # Sets progressbar style
 if darkMode:
-	addProgress = ttk.Progressbar(root, orient=HORIZONTAL, length=50, mode="indeterminate", style="My.Horizontal.TProgressbar")
-else:
-	addProgress = ttk.Progressbar(root, orient=HORIZONTAL, length=50, mode="indeterminate")
+	style = ttk.Style()
+	style.theme_use("clam")
+	style.configure("TProgressbar", foreground="black", background="black", troughcolor="black")
+
+addProgress = ttk.Progressbar(root, orient=HORIZONTAL, length=50, mode="indeterminate")
 
 
 def showListBoxRight(x):
@@ -1690,29 +1759,38 @@ root.bind("<Control-r>", lambda x: refreshImageCache())
 root.bind("<Control-w>", lambda x: root.quit())
 root.title("Progress Tracker")
 root.resizable(False, False)
-root.grid_columnconfigure(4, weight=1)
+root.grid_columnconfigure(3, weight=1)
 
 # Starts application
 if offline:
 	goOffline()
+	banner.grid(row=0, column=0, columnspan=3, sticky="new")
+	banner.bind("<Button-1>", goOnline)
 
 try:
-	data = pickle.load(open(dataPath + "Progress.dat", "rb"))
+	data = load(open(dataPath, "rb"))
 	
-	if not data[0].version == showVersion:
+	if data[0].version < showVersion:
 		newData = []
 		for i in data:
 			newData.append(Show(i.dump()))
 		data = newData
+	elif data[0].version > showVersion:
+		messagebox.showinfo("Error", "Please update app to use this database")
+		exit()
 	
 	sortData()
 except FileNotFoundError:
 	data = []
 
 
-loadSites()
+for i in glob(tempPath + "Sites\*.site"):
+	sites.append(Site(i))
+sites = sorted(sites)
+showLinkInfo = len(sites) > 0
+
 setShow(currentShowNum)
 Thread(target=downloadImages, daemon=True).start()
 Thread(target=updateShows, daemon=True).start()
 root.mainloop()
-pickle.dump(data, open(dataPath + "Progress.dat", "wb"))
+dump(data, open(dataPath, "wb"))
