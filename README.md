@@ -44,7 +44,8 @@
 	- Each section is marked at the beginning and end by a line with nothing but the name of that section
 	- A section uses a list of instructions and arguments to manipulate an array of values, which by default is empty (`[]`)
 	- In a section, the following syntax is used:
-		- Command name
+		- Command name 
+		# CLICKS
 			- **getElementAttribute** sets item _index_ to the _attribute_ of the _element_ at _element index_ in the webpage at _url_ (any `{}` in _url_ will be replaced with the show title, or in case of multiple seasons, "show title _[season number]_")
 				- index
 				- url
@@ -61,6 +62,11 @@
 			- **insert** inserts _text_ into memory at _index_
 				- index
 				- text
+			- **remove** removes item _index_ from memory
+				- index
+			- **combine** combines two items from memory
+				- index 1
+				- index 2
 			- **debase** decodes base64 item at _index_
 				- index
 			- **add** adds item at _index_ to _number_
